@@ -6,11 +6,12 @@ from PIL import Image
 import torch
 from torchvision import models, transforms
 from ultralytics import YOLO
+import matplotlib.pyplot as plt
 
 # ---------------------------
 # Title
 # ---------------------------
-st.title("Car Detection & ML Demo")
+st.title("🚗 Car Detection & ML Demo")
 
 # ---------------------------
 # Dataset selection
@@ -27,7 +28,27 @@ image_files = sorted(glob.glob(images_path + "*.jpg"))
 label_files = sorted(glob.glob(labels_path + "*.txt"))
 
 # ---------------------------
-# Sidebar: Next / Previous image
+# Initialize Models (only once)
+# ---------------------------
+@st.cache_resource
+def load_models():
+    yolo = YOLO("yolov8n.pt")  # small YOLO
+    resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+    resnet.eval()
+    return yolo, resnet
+
+model_yolo, model_cls = load_models()
+
+transform = transforms.Compose([
+    transforms.Resize((224,224)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+])
+
+imagenet_labels = models.ResNet18_Weights.DEFAULT.meta["categories"]
+
+# ---------------------------
+# Sidebar: Navigation
 # ---------------------------
 if 'img_index' not in st.session_state:
     st.session_state.img_index = 0
@@ -40,14 +61,19 @@ def next_image():
     if st.session_state.img_index < len(image_files) - 1:
         st.session_state.img_index += 1
 
-st.sidebar.button("Previous", on_click=prev_image)
-st.sidebar.button("Next", on_click=next_image)
+st.sidebar.button("⬅️ Previous", on_click=prev_image)
+st.sidebar.button("➡️ Next", on_click=next_image)
+
+# Dropdown for direct image choice
+img_names = [f.split("/")[-1] for f in image_files]
+chosen_file = st.sidebar.selectbox("Jump to image", img_names, index=st.session_state.img_index)
+st.session_state.img_index = img_names.index(chosen_file)
 
 img_index = st.session_state.img_index
 img_path = image_files[img_index]
 lbl_path = label_files[img_index]
 
-st.sidebar.write(f"Image: {img_path.split('/')[-1]} ({img_index+1}/{len(image_files)})")
+st.sidebar.write(f"Image: {img_names[img_index]} ({img_index+1}/{len(image_files)})")
 
 # ---------------------------
 # Load image
@@ -76,8 +102,6 @@ for line in lines:
 # ---------------------------
 # YOLOv8 prediction (Blue)
 # ---------------------------
-st.sidebar.write("Running YOLOv8 detection...")
-model_yolo = YOLO("yolov8n.pt")  # pretrained model
 results = model_yolo(img_path)
 
 for box, score in zip(results[0].boxes.xyxy, results[0].boxes.conf):
@@ -86,34 +110,33 @@ for box, score in zip(results[0].boxes.xyxy, results[0].boxes.conf):
     cv2.putText(img, f"{score:.2f}", (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 2)
 
 # ---------------------------
-# Pretrained classifier (ResNet18)
+# ResNet18 classification
 # ---------------------------
-st.sidebar.write("Running classifier (ResNet18)...")
-model_cls = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-model_cls.eval()
-
-transform = transforms.Compose([
-    transforms.Resize((224,224)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-])
-
 img_pil = Image.open(img_path).convert("RGB")
 input_tensor = transform(img_pil).unsqueeze(0)
 
 with torch.no_grad():
     outputs = model_cls(input_tensor)
-    probs = torch.nn.functional.softmax(outputs, dim=1)
-    conf, predicted = torch.max(probs, 1)
+    probs = torch.nn.functional.softmax(outputs, dim=1)[0]
+    conf, predicted = torch.max(probs, 0)
 
-st.sidebar.write(f"Classifier Prediction: ID {predicted.item()} with confidence {conf.item():.2f}")
+pred_label = imagenet_labels[predicted.item()]
+st.sidebar.write(f"**Classifier Prediction:** {pred_label} ({conf.item():.2f})")
+
+# Show top-5 probabilities
+top5_prob, top5_idx = torch.topk(probs, 5)
+fig, ax = plt.subplots()
+ax.barh([imagenet_labels[i] for i in top5_idx], top5_prob.numpy())
+ax.set_xlabel("Confidence")
+ax.set_title("Top-5 Classifier Predictions")
+st.sidebar.pyplot(fig)
 
 # ---------------------------
 # Legend
 # ---------------------------
 st.sidebar.markdown("### Legend")
 st.sidebar.markdown("🟩 Ground Truth Box")
-st.sidebar.markdown("🟦 YOLO Predicted Box with confidence")
+st.sidebar.markdown("🟦 YOLO Predicted Box w/ confidence")
 
 # ---------------------------
 # Display final image
